@@ -33,6 +33,7 @@
 		"@radix-ui/react-toast": "^1.1.5",
 		"@radix-ui/react-tooltip": "^1.0.7",
 		"@radix-ui/react-visually-hidden": "^1.0.3",
+		"@reactivex/rxjs": "^6.6.7",
 		"@remix-run/cloudflare": "2.4.1",
 		"@remix-run/cloudflare-workers": "2.4.1",
 		"@remix-run/react": "2.4.1",
