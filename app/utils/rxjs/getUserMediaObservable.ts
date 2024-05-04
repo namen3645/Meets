@@ -1,6 +1,6 @@
 import {
-	BehaviorSubject,
 	Observable,
+	Subscriber,
 	combineLatest,
 	concat,
 	distinctUntilChanged,
@@ -8,6 +8,10 @@ import {
 	of,
 	switchMap,
 } from 'rxjs'
+import {
+	addDeviceToDeprioritizeList,
+	removeDeviceFromDeprioritizeList,
+} from './devicePrioritization'
 import { getSortedDeviceListObservable } from './getDeviceListObservable'
 import { trackIsHealthy } from './trackIsHealthy'
 
@@ -18,15 +22,12 @@ export function getUserMediaObservable(
 	constraints$: Observable<MediaTrackConstraints> = of({}),
 	deviceList$: Observable<MediaDeviceInfo[]> = getSortedDeviceListObservable()
 ): Observable<MediaStreamTrack> {
-	// used to restart the track acquisition process when necessary
-	const trackId$ = new BehaviorSubject(crypto.randomUUID())
 	return combineLatest([
 		deviceList$.pipe(
 			map((list) => list.filter((d) => d.kind === kind)),
 			distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b))
 		),
 		constraints$,
-		trackId$,
 	]).pipe(
 		// switchMap on the outside here will cause a new
 		switchMap(([deviceList, constraints]) =>
@@ -34,64 +35,11 @@ export function getUserMediaObservable(
 			// to sequentially
 			concat(
 				...deviceList.map((device) => {
-					return new Observable<MediaStreamTrack>((subscribe) => {
-						let cleanupRef = { current: () => {} }
-						const { deviceId, label } = device
-						console.log(`🙏🏻 Requesting ${label}`)
-						navigator.mediaDevices
-							.getUserMedia(
-								kind === 'videoinput'
-									? { video: { ...constraints, deviceId } }
-									: { audio: { ...constraints, deviceId } }
-							)
-							.then(async (mediaStream) => {
-								const track =
-									kind === 'videoinput'
-										? mediaStream.getVideoTracks()[0]
-										: mediaStream.getAudioTracks()[0]
-								if (await trackIsHealthy(track)) {
-									const healthCheck = async () => {
-										if (document.visibilityState !== 'visible') return
-										console.log('Tab is foregrounded, checking health...')
-
-										if (await trackIsHealthy(track)) return
-										console.log('Restarting track acquisition')
-										trackId$.next(crypto.randomUUID())
-									}
-									document.addEventListener('visibilitychange', healthCheck)
-									cleanupRef.current = () => {
-										console.log('🛑 No subscribers, stopping')
-										track.stop()
-										document.removeEventListener(
-											'visibilitychange',
-											healthCheck
-										)
-									}
-									subscribe.next(track)
-								} else {
-									console.log('☠️ track is not healthy, stopping')
-									// TODO: Might be problematic to do this here as long
-									// as we're depending on an observable of the depriorotized
-									// device list
-									// addDeviceToDeprioritizeList(device)
-									track.stop()
-									subscribe.complete()
-								}
-								track.addEventListener('ended', () => {
-									console.log('🔌 Track ended abrubptly')
-									subscribe.complete()
-								})
-							})
-							.catch((err) => {
-								// this device is in use already, probably on Windows
-								// so we can just call this one complete and move on
-								if (err instanceof Error && err.name === 'NotReadable') {
-									subscribe.complete()
-								} else {
-									subscribe.error(err)
-								}
-							})
+					return new Observable<MediaStreamTrack>((subscriber) => {
+						const cleanupRef = { current: () => {} }
+						acquireTrack(subscriber, device, kind, constraints, cleanupRef)
 						return () => {
+							console.log('🛑 Errored or no subscribers, stopping...')
 							cleanupRef.current()
 						}
 					})
@@ -102,4 +50,64 @@ export function getUserMediaObservable(
 			)
 		)
 	)
+}
+
+function acquireTrack(
+	subscriber: Subscriber<MediaStreamTrack>,
+	device: MediaDeviceInfo,
+	kind: MediaDeviceKind,
+	constraints: MediaTrackConstraints,
+	cleanupRef: { current: () => void }
+) {
+	const { deviceId, label } = device
+	console.log(`🙏🏻 Requesting ${label}`)
+	navigator.mediaDevices
+		.getUserMedia(
+			kind === 'videoinput'
+				? { video: { ...constraints, deviceId } }
+				: { audio: { ...constraints, deviceId } }
+		)
+		.then(async (mediaStream) => {
+			const track =
+				kind === 'videoinput'
+					? mediaStream.getVideoTracks()[0]
+					: mediaStream.getAudioTracks()[0]
+			if (await trackIsHealthy(track)) {
+				const cleanup = () => {
+					console.log('Cleaning up...')
+					track.stop()
+					document.removeEventListener('visibilitychange', onVisibleHandler)
+				}
+				const onVisibleHandler = async () => {
+					if (document.visibilityState !== 'visible') return
+					console.log('Tab is foregrounded, checking health...')
+					if (await trackIsHealthy(track)) return
+					console.log('Reacquiring track')
+					cleanup()
+					acquireTrack(subscriber, device, kind, constraints, cleanupRef)
+				}
+				document.addEventListener('visibilitychange', onVisibleHandler)
+				cleanupRef.current = cleanup
+				subscriber.next(track)
+				removeDeviceFromDeprioritizeList(device)
+			} else {
+				console.log('☠️ track is not healthy, stopping')
+				addDeviceToDeprioritizeList(device)
+				track.stop()
+				subscriber.complete()
+			}
+			track.addEventListener('ended', () => {
+				console.log('🔌 Track ended abrubptly')
+				subscriber.complete()
+			})
+		})
+		.catch((err) => {
+			// this device is in use already, probably on Windows
+			// so we can just call this one complete and move on
+			if (err instanceof Error && err.name === 'NotReadable') {
+				subscriber.complete()
+			} else {
+				subscriber.error(err)
+			}
+		})
 }
