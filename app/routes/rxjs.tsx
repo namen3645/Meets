@@ -4,14 +4,12 @@ import {
 	BehaviorSubject,
 	Observable,
 	combineLatest,
-	debounceTime,
 	distinctUntilChanged,
 	filter,
 	finalize,
 	from,
 	fromEvent,
 	map,
-	merge,
 	retry,
 	share,
 	shareReplay,
@@ -29,13 +27,7 @@ import {
 import { useIsServer } from '~/hooks/useIsServer'
 import { FIFOScheduler } from '~/utils/Peer.utils'
 import type { RenegotiationResponse, TracksResponse } from '~/utils/callsTypes'
-
-function debug<T>(message: string) {
-	return tap<T>({
-		next: (...args) => console.log(message, ...args),
-		complete: () => console.log('COMPLETED ', message),
-	})
-}
+import { getUserMediaObservable } from '~/utils/rxjs/getUserMediaObservable'
 
 export default function Component() {
 	const isServer = useIsServer()
@@ -431,57 +423,12 @@ class RxjsPeerClient {
 	}
 }
 
-function getDevices$() {
-	return merge(
-		navigator.mediaDevices.enumerateDevices(),
-		fromEvent(navigator.mediaDevices, 'devicechange').pipe(
-			debounceTime(1500),
-			switchMap(() => navigator.mediaDevices.enumerateDevices())
-		)
-	)
-}
-
 function useWebcam(enabled: boolean, deviceId?: string) {
 	// stable reference to the observable
 	const deviceId$ = useBehaviorSubject(deviceId)
 	return useMemo(() => {
 		if (!enabled) return null
-		return combineLatest([deviceId$, getDevices$()]).pipe(
-			switchMap(
-				([deviceId]) =>
-					new Observable<MediaStreamTrack>((sub) => {
-						let track: MediaStreamTrack
-						const getTrack = async () => {
-							console.log('📹 requesting webcam')
-							navigator.mediaDevices
-								.getUserMedia({ video: { deviceId } })
-								.then((mediaStream) => {
-									const [t] = mediaStream.getVideoTracks()
-									t.addEventListener('ended', () => {
-										console.log('🔌 webcam stopped abruptly')
-										if (!sub.closed) {
-											getTrack()
-										}
-									})
-									sub.next(t)
-									track = t
-									// we need this check because the promise may have resolved
-									// after the last subscriber has already unsubscribed, meaning
-									// the cleanup function has already run
-									if (sub.closed) {
-										console.log('🛑 stopping webcam intentionally')
-										track.stop()
-									}
-									return mediaStream
-								})
-						}
-						getTrack()
-						return () => {
-							console.log('🛑 stopping webcam intentionally')
-							track?.stop()
-						}
-					})
-			),
+		return getUserMediaObservable('videoinput').pipe(
 			shareReplay({
 				refCount: true,
 				bufferSize: 1,
