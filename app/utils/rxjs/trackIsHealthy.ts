@@ -9,8 +9,19 @@ export async function trackIsHealthy(
 	// if (track.kind === "video") {
 	//   draw to canvas and check if all black pixels
 	// }
+	//
 
-	const healthy = !track.muted && track.readyState === 'live' && track.enabled
+	const randomFailure = Math.random() < 0.2
+
+	if (randomFailure) {
+		console.log('Random failure!')
+	}
+
+	const healthy =
+		!track.muted &&
+		track.readyState === 'live' &&
+		track.enabled &&
+		!randomFailure
 	console.log(`👩🏻‍⚕️ track is ${healthy ? 'healthy' : 'unhealthy'}!`)
 	return healthy
 }
