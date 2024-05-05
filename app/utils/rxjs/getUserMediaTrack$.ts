@@ -17,7 +17,7 @@ import { trackIsHealthy } from './trackIsHealthy'
 
 export const DEVICES_EXHAUSTED_ERROR = 'DevicesExhausted'
 
-export function getUserMediaObservable(
+export function getUserMediaTrack$(
 	kind: MediaDeviceKind,
 	constraints$: Observable<MediaTrackConstraints> = of({}),
 	deviceList$: Observable<MediaDeviceInfo[]> = getSortedDeviceListObservable()
