@@ -1,10 +1,10 @@
-import type { ElementRef } from 'react'
+import type { ComponentProps, ElementRef } from 'react'
 import { useMemo, useRef, useState } from 'react'
 import { Observable, map, shareReplay } from 'rxjs'
 import { useObservableEffect, useObservableState } from '~/hooks/rxjsHooks'
 import { useIsServer } from '~/hooks/useIsServer'
 import { RxjsPeer } from '~/utils/rxjs/RxjsPeer.client'
-import { getUserMediaObservable } from '~/utils/rxjs/getUserMediaObservable'
+import { getUserMediaTrack$ } from '~/utils/rxjs/getUserMediaTrack$'
 
 export default function Component() {
 	const isServer = useIsServer()
@@ -31,60 +31,65 @@ function Rxjs() {
 		'new'
 	)
 	const sessionId = useObservableState(
-		client.session$.pipe(map((x) => (x ? x.sessionId : null))),
+		client.session$.pipe(map((x) => x.sessionId)),
 		null
 	)
 
-	const webcamTrack$ = useWebcam(localFeedOn)
-	const remoteTrack$ = useMemo(() => {
-		if (!webcamTrack$ || !remoteFeedOn) return null
-		return client.pullTrack(client.pushTrack(webcamTrack$))
-	}, [client, remoteFeedOn, webcamTrack$])
+	const localVideoTrack$ = useWebcamTrack$(localFeedOn)
+	const removeVideoTrack$ = useMemo(() => {
+		if (!localVideoTrack$ || !remoteFeedOn) return null
+		return client.pullTrack(client.pushTrack(localVideoTrack$))
+	}, [client, remoteFeedOn, localVideoTrack$])
 
 	return (
-		<div>
-			<button className="border" onClick={() => setLocalFeedOn(!localFeedOn)}>
-				{' '}
-				turn local {localFeedOn ? 'off' : 'on'}{' '}
-			</button>
-			<button className="border" onClick={() => setRemoteFeedOn(!remoteFeedOn)}>
-				{' '}
-				turn remote {remoteFeedOn ? 'off' : 'on'}{' '}
-			</button>
-			{webcamTrack$ && localFeedOn && <Video videoTrack$={webcamTrack$} />}
-			{remoteTrack$ && remoteFeedOn && <Video videoTrack$={remoteTrack$} />}
-
-			<pre>
-				{JSON.stringify(
-					{
-						peerConnectionState,
-						sessionId,
-					},
-					null,
-					2
+		<div className="p-2 flex flex-col gap-3">
+			<div className="flex gap-2">
+				<Button onClick={() => setLocalFeedOn(!localFeedOn)}>
+					Turn Local {localFeedOn ? 'Off' : 'On'}
+				</Button>
+				<Button onClick={() => setRemoteFeedOn(!remoteFeedOn)}>
+					Turn Remote {remoteFeedOn ? 'Off' : 'On'}
+				</Button>
+			</div>
+			<div className="grid xl:grid-cols-2">
+				{localVideoTrack$ && localFeedOn && (
+					<Video videoTrack$={localVideoTrack$} />
 				)}
-			</pre>
+				{removeVideoTrack$ && remoteFeedOn && (
+					<Video videoTrack$={removeVideoTrack$} />
+				)}
+			</div>
+			<pre>{JSON.stringify({ peerConnectionState, sessionId }, null, 2)}</pre>
 		</div>
 	)
+}
+
+function Button(props: ComponentProps<'button'>) {
+	return <button className="border px-1" {...props}></button>
 }
 
 function Video(props: { videoTrack$: Observable<MediaStreamTrack | null> }) {
 	const ref = useRef<ElementRef<'video'>>(null)
 	useObservableEffect(props.videoTrack$, (track) => {
-		if (track && ref.current) {
+		if (!ref.current) return
+		if (track) {
 			const mediaStream = new MediaStream()
 			mediaStream.addTrack(track)
 			ref.current.srcObject = mediaStream
+		} else {
+			ref.current.srcObject = null
 		}
 	})
 
-	return <video ref={ref} autoPlay muted playsInline />
+	return (
+		<video className="h-full w-full" ref={ref} autoPlay muted playsInline />
+	)
 }
 
-function useWebcam(enabled: boolean) {
+function useWebcamTrack$(enabled: boolean) {
 	return useMemo(() => {
 		if (!enabled) return null
-		return getUserMediaObservable('videoinput').pipe(
+		return getUserMediaTrack$('videoinput').pipe(
 			shareReplay({
 				refCount: true,
 				bufferSize: 1,
