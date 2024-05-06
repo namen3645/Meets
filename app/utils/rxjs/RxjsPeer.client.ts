@@ -8,6 +8,7 @@ import {
 	from,
 	fromEvent,
 	map,
+	of,
 	retry,
 	share,
 	shareReplay,
@@ -18,7 +19,11 @@ import {
 } from 'rxjs'
 import invariant from 'tiny-invariant'
 import { BulkRequestDispatcher, FIFOScheduler } from '../Peer.utils'
-import type { RenegotiationResponse, TracksResponse } from '../callsTypes'
+import type {
+	RenegotiationResponse,
+	TrackObject,
+	TracksResponse,
+} from '../callsTypes'
 
 interface PeerConfig {
 	appId: string
@@ -91,7 +96,13 @@ export class RxjsPeer {
 	}
 
 	taskScheduler = new FIFOScheduler()
-	pushTrackDispatcher = new BulkRequestDispatcher(32)
+	pushTrackDispatcher = new BulkRequestDispatcher<
+		{
+			trackName: string
+			transceiver: RTCRtpTransceiver
+		},
+		{ tracks: TrackObject[] }
+	>(32)
 	pullTrackDispatcher = new BulkRequestDispatcher<
 		TrackData,
 		{
@@ -145,6 +156,62 @@ export class RxjsPeer {
 		return { peerConnection, sessionId }
 	}
 
+	async #pushTrackInBulk(
+		peerConnection: RTCPeerConnection,
+		transceiver: RTCRtpTransceiver,
+		sessionId: string,
+		trackName: string
+	): Promise<TrackData> {
+		console.log('📤 pushing track')
+		const { tracks } = await this.pushTrackDispatcher.doBulkRequest(
+			{ trackName, transceiver },
+			(tracks) =>
+				this.taskScheduler.schedule(async () => {
+					await peerConnection.setLocalDescription(
+						await peerConnection.createOffer()
+					)
+
+					const response = await fetch(
+						`${this.config.apiBase}/${this.config.appId}/sessions/${sessionId}/tracks/new`,
+						{
+							method: 'POST',
+							headers: this.authHeaders(),
+							body: JSON.stringify({
+								sessionDescription: {
+									sdp: peerConnection.localDescription?.sdp,
+									type: 'offer',
+								},
+								tracks: tracks.map(({ trackName, transceiver }) => ({
+									trackName,
+									mid: transceiver.mid,
+									location: 'local',
+								})),
+							}),
+						}
+					).then((res) => res.json() as Promise<TracksResponse>)
+					if (!response.errorCode) {
+						await peerConnection.setRemoteDescription(
+							new RTCSessionDescription(response.sessionDescription)
+						)
+					}
+
+					return {
+						// TODO: Fix as any
+						tracks: response.tracks as any,
+					}
+				})
+		)
+
+		const trackData = tracks.find((t) => t.mid === transceiver.mid)
+		invariant(trackData)
+		// TODO: Fix as any
+		return {
+			...trackData,
+			sessionId,
+			location: 'remote',
+		} as any
+	}
+
 	pushTrack(track$: Observable<MediaStreamTrack>): Observable<TrackData> {
 		// we want a single id for this connection, so we will use the
 		// first track's id
@@ -186,55 +253,25 @@ export class RxjsPeer {
 						session: { peerConnection, sessionId },
 					},
 					track,
-				]) =>
-					from(
-						this.taskScheduler.schedule(async () => {
-							if (transceiver.sender.transport !== null) {
-								console.log('♻︎ replacing track')
-								transceiver.sender.replaceTrack(track)
-								return {
-									location: 'remote',
-									sessionId,
-									trackName: stableId,
-								}
-							}
-							console.log('📤 pushing track')
-							await peerConnection.setLocalDescription(
-								await peerConnection.createOffer()
-							)
-
-							const response = await fetch(
-								`${this.config.apiBase}/${this.config.appId}/sessions/${sessionId}/tracks/new`,
-								{
-									method: 'POST',
-									headers: this.authHeaders(),
-									body: JSON.stringify({
-										sessionDescription: {
-											sdp: peerConnection.localDescription?.sdp,
-											type: 'offer',
-										},
-										tracks: [
-											{
-												location: 'local',
-												mid: transceiver.mid,
-												trackName: stableId,
-											},
-										],
-									}),
-								}
-							).then((res) => res.json() as Promise<TracksResponse>)
-							if (!response.errorCode) {
-								await peerConnection.setRemoteDescription(
-									new RTCSessionDescription(response.sessionDescription)
-								)
-							}
-							return {
-								location: 'remote',
-								sessionId,
-								trackName: stableId,
-							}
+				]) => {
+					if (transceiver.sender.transport !== null) {
+						console.log('♻︎ replacing track')
+						transceiver.sender.replaceTrack(track)
+						return of({
+							location: 'remote',
+							sessionId,
+							trackName: stableId,
 						})
+					}
+					return from(
+						this.#pushTrackInBulk(
+							peerConnection,
+							transceiver,
+							sessionId,
+							stableId
+						)
 					)
+				}
 			),
 			finalize(() => {
 				completeRef.current()
@@ -252,6 +289,7 @@ export class RxjsPeer {
 		trackData: TrackData,
 		closeRef: { current: () => void }
 	): Promise<MediaStreamTrack> {
+		console.log('📥 pulling track')
 		const { trackMap } = await this.pullTrackDispatcher.doBulkRequest(
 			trackData,
 			(tracks) =>
@@ -266,7 +304,6 @@ export class RxjsPeer {
 							}),
 						}
 					).then((res) => res.json() as Promise<TracksResponse>)
-					console.log({ newTrackResponse })
 					if (newTrackResponse.errorCode) {
 						throw new Error(newTrackResponse.errorDescription)
 					}
@@ -320,7 +357,6 @@ export class RxjsPeer {
 		)
 
 		const trackInfo = trackMap.get(trackData)
-		console.log({ trackData, trackMap })
 		invariant(trackInfo)
 
 		const { resolvedTrack, mid } = trackInfo
@@ -403,11 +439,13 @@ export class RxjsPeer {
 	}
 }
 
-function createPeerConnection() {
-	const pc = new RTCPeerConnection({
+function createPeerConnection(
+	configuration: RTCConfiguration = {
 		iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
 		bundlePolicy: 'max-bundle',
-	})
+	}
+) {
+	const pc = new RTCPeerConnection(configuration)
 
 	pc.addTransceiver('audio', {
 		direction: 'inactive',
