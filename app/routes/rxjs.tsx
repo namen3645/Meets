@@ -36,10 +36,15 @@ function Rxjs() {
 	)
 
 	const localVideoTrack$ = useWebcamTrack$(localFeedOn)
-	const removeVideoTrack$ = useMemo(() => {
+	const localMicTrack$ = useMicTrack$(localFeedOn)
+	const remoteVideoTrack$ = useMemo(() => {
 		if (!localVideoTrack$ || !remoteFeedOn) return null
 		return client.pullTrack(client.pushTrack(localVideoTrack$))
 	}, [client, remoteFeedOn, localVideoTrack$])
+	const remoteAudioTrack$ = useMemo(() => {
+		if (!localMicTrack$ || !remoteFeedOn) return null
+		return client.pullTrack(client.pushTrack(localMicTrack$))
+	}, [client, remoteFeedOn, localMicTrack$])
 
 	return (
 		<div className="p-2 flex flex-col gap-3">
@@ -55,8 +60,14 @@ function Rxjs() {
 				{localVideoTrack$ && localFeedOn && (
 					<Video videoTrack$={localVideoTrack$} />
 				)}
-				{removeVideoTrack$ && remoteFeedOn && (
-					<Video videoTrack$={removeVideoTrack$} />
+				{localMicTrack$ && localFeedOn && (
+					<Audio audioTrack$={localMicTrack$} />
+				)}
+				{remoteVideoTrack$ && remoteFeedOn && (
+					<Video videoTrack$={remoteVideoTrack$} />
+				)}
+				{remoteAudioTrack$ && remoteFeedOn && (
+					<Audio audioTrack$={remoteAudioTrack$} />
 				)}
 			</div>
 			<pre>{JSON.stringify({ peerConnectionState, sessionId }, null, 2)}</pre>
@@ -86,10 +97,38 @@ function Video(props: { videoTrack$: Observable<MediaStreamTrack | null> }) {
 	)
 }
 
+function Audio(props: { audioTrack$: Observable<MediaStreamTrack | null> }) {
+	const ref = useRef<ElementRef<'audio'>>(null)
+	useObservableEffect(props.audioTrack$, (track) => {
+		if (!ref.current) return
+		if (track) {
+			const mediaStream = new MediaStream()
+			mediaStream.addTrack(track)
+			ref.current.srcObject = mediaStream
+		} else {
+			ref.current.srcObject = null
+		}
+	})
+
+	return <audio className="h-full w-full" ref={ref} autoPlay playsInline />
+}
+
 function useWebcamTrack$(enabled: boolean) {
 	return useMemo(() => {
 		if (!enabled) return null
 		return getUserMediaTrack$('videoinput').pipe(
+			shareReplay({
+				refCount: true,
+				bufferSize: 1,
+			})
+		)
+	}, [enabled])
+}
+
+function useMicTrack$(enabled: boolean) {
+	return useMemo(() => {
+		if (!enabled) return null
+		return getUserMediaTrack$('audioinput').pipe(
 			shareReplay({
 				refCount: true,
 				bufferSize: 1,
