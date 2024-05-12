@@ -31,12 +31,6 @@ interface PeerConfig {
 	apiBase: string
 }
 
-interface TrackData {
-	location: string
-	sessionId: string
-	trackName: string
-}
-
 export class RxjsPeer {
 	#peerConnection: BehaviorSubject<RTCPeerConnection>
 	peerConnection$: Observable<RTCPeerConnection>
@@ -104,10 +98,10 @@ export class RxjsPeer {
 		{ tracks: TrackObject[] }
 	>(32)
 	pullTrackDispatcher = new BulkRequestDispatcher<
-		TrackData,
+		TrackObject,
 		{
 			trackMap: Map<
-				TrackData,
+				TrackObject,
 				{ resolvedTrack: Promise<MediaStreamTrack>; mid: string }
 			>
 		}
@@ -161,7 +155,7 @@ export class RxjsPeer {
 		transceiver: RTCRtpTransceiver,
 		sessionId: string,
 		trackName: string
-	): Promise<TrackData> {
+	): Promise<TrackObject> {
 		console.log('📤 pushing track')
 		const { tracks } = await this.pushTrackDispatcher.doBulkRequest(
 			{ trackName, transceiver },
@@ -189,6 +183,7 @@ export class RxjsPeer {
 							}),
 						}
 					).then((res) => res.json() as Promise<TracksResponse>)
+					invariant(response.tracks !== undefined)
 					if (!response.errorCode) {
 						await peerConnection.setRemoteDescription(
 							new RTCSessionDescription(response.sessionDescription)
@@ -196,23 +191,21 @@ export class RxjsPeer {
 					}
 
 					return {
-						// TODO: Fix as any
-						tracks: response.tracks as any,
+						tracks: response.tracks,
 					}
 				})
 		)
 
 		const trackData = tracks.find((t) => t.mid === transceiver.mid)
 		invariant(trackData)
-		// TODO: Fix as any
 		return {
 			...trackData,
 			sessionId,
 			location: 'remote',
-		} as any
+		}
 	}
 
-	pushTrack(track$: Observable<MediaStreamTrack>): Observable<TrackData> {
+	pushTrack(track$: Observable<MediaStreamTrack>): Observable<TrackObject> {
 		// we want a single id for this connection, so we will use the
 		// first track's id
 		const stableId$ = track$.pipe(
@@ -258,7 +251,7 @@ export class RxjsPeer {
 						console.log('♻︎ replacing track')
 						transceiver.sender.replaceTrack(track)
 						return of({
-							location: 'remote',
+							location: 'remote' as const,
 							sessionId,
 							trackName: stableId,
 						})
@@ -286,7 +279,7 @@ export class RxjsPeer {
 	async #pullTrackInBulk(
 		peerConnection: RTCPeerConnection,
 		sessionId: string,
-		trackData: TrackData,
+		trackData: TrackObject,
 		closeRef: { current: () => void }
 	): Promise<MediaStreamTrack> {
 		console.log('📥 pulling track')
@@ -326,7 +319,7 @@ export class RxjsPeer {
 						}
 
 						return acc
-					}, new Map<TrackData, { resolvedTrack: Promise<MediaStreamTrack>; mid: string }>())
+					}, new Map<TrackObject, { resolvedTrack: Promise<MediaStreamTrack>; mid: string }>())
 
 					if (newTrackResponse.requiresImmediateRenegotiation) {
 						await peerConnection.setRemoteDescription(
@@ -369,7 +362,7 @@ export class RxjsPeer {
 		return resolvedTrack
 	}
 
-	pullTrack(trackData$: Observable<TrackData>): Observable<MediaStreamTrack> {
+	pullTrack(trackData$: Observable<TrackObject>): Observable<MediaStreamTrack> {
 		let closeRef = { current: () => {} }
 		return combineLatest([
 			this.session$,
