@@ -7,7 +7,7 @@
 		"build": "remix build",
 		"lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
 		"dev": "remix dev --manual -c \"npm start\"",
-		"start": "node your-production-server.js",
+		"start": "serve -s build",
 		"prebuild": "npm run clean",
 		"clean": "del public/build && del build",
 		"ci-test": "CI=true run-p typecheck test",
